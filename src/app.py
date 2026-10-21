@@ -74,22 +74,25 @@ st.markdown("""
         margin-left: 8px;
     }
     .metric-card {
-        background-color: #f8f9fa;
-        border: 1px solid #dee2e6;
+        background-color: var(--secondary-background-color, #f8f9fa);
+        border: 1px solid rgba(128, 128, 128, 0.25);
         border-radius: 10px;
         padding: 16px;
         text-align: center;
         box-shadow: 0 2px 4px rgba(0,0,0,0.04);
+        color: var(--text-color, #212529);
     }
     .metric-value {
         font-size: 1.8rem;
         font-weight: 700;
         margin: 4px 0;
+        color: var(--text-color, #212529);
     }
     .metric-label {
         font-size: 0.85rem;
         text-transform: uppercase;
-        color: #6c757d;
+        color: var(--text-color, #6c757d);
+        opacity: 0.85;
         font-weight: 600;
     }
     .diff-added {
@@ -105,7 +108,8 @@ st.markdown("""
         font-weight: bold;
     }
     .diff-unchanged {
-        color: #6c757d;
+        color: var(--text-color, #6c757d);
+        opacity: 0.75;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -267,26 +271,11 @@ with tab_scanner:
             # Metrics row
             m1, m2, m3 = st.columns(3)
             with m1:
-                st.markdown(f"""
-                <div class="metric-card">
-                    <div class="metric-label">Target Scanned</div>
-                    <div class="metric-value">{target_input}</div>
-                </div>
-                """, unsafe_allow_html=True)
+                st.metric(label="Target Scanned", value=target_input, border=True)
             with m2:
-                st.markdown(f"""
-                <div class="metric-card">
-                    <div class="metric-label">Active Services Discovered</div>
-                    <div class="metric-value" style="color: #198754;">{len(observations)}</div>
-                </div>
-                """, unsafe_allow_html=True)
+                st.metric(label="Active Services Discovered", value=len(observations), border=True)
             with m3:
-                st.markdown(f"""
-                <div class="metric-card">
-                    <div class="metric-label">Scan Duration</div>
-                    <div class="metric-value">{duration:.2f}s</div>
-                </div>
-                """, unsafe_allow_html=True)
+                st.metric(label="Scan Duration", value=f"{duration:.2f}s", border=True)
 
             st.markdown("<br>", unsafe_allow_html=True)
 

@@ -364,3 +364,147 @@ def test_existing_valid_localhost_scanning_and_diff(sensitive_server, temp_db):
     assert summary["has_changes"] is True
     assert summary["removed_count"] == 1
     assert diff["removed"][0]["port"] == port
+
+
+# -----------------------------------------------------------------------------
+# 8. NON-HTTP TCP INVENTORY & SNAPSHOT COMPARISONS
+# -----------------------------------------------------------------------------
+class RawTCPTestHandler(socketserver.BaseRequestHandler):
+    def handle(self):
+        try:
+            self.request.recv(1024)
+        except Exception:
+            pass
+
+
+@pytest.fixture
+def raw_tcp_server():
+    server = socketserver.TCPServer(("127.0.0.1", 0), RawTCPTestHandler)
+    host, port = server.server_address
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield host, port
+    server.shutdown()
+    server.server_close()
+
+
+def test_non_http_tcp_open_port_inventory(raw_tcp_server, temp_db):
+    """
+    Verify that an authorized open TCP port where HTTP probing fails
+    is recorded as an observation with service='tcp-open', protocol='tcp', status_code=None.
+    """
+    host, port = raw_tcp_server
+    discovery = AssetDiscovery(db_path=temp_db)
+
+    obs, duration = discovery.scan(host, ports=[port])
+    assert len(obs) == 1
+    assert obs[0]["host"] == host
+    assert obs[0]["port"] == port
+    assert obs[0]["protocol"] == "tcp"
+    assert obs[0]["service"] == "tcp-open"
+    assert obs[0]["status_code"] is None
+    assert obs[0]["state"] == "open"
+    assert duration >= 0.0
+
+    # Save to SQLite and verify roundtrip
+    snap_id = database.save_snapshot(host, obs, tested_ports=[port], db_path=temp_db)
+    retrieved = database.get_observations_for_snapshot(snap_id, temp_db)
+    assert len(retrieved) == 1
+    assert retrieved[0]["protocol"] == "tcp"
+    assert retrieved[0]["service"] == "tcp-open"
+    assert retrieved[0]["status_code"] is None
+
+
+def test_mixed_ports_inventory_http_non_http_and_closed(raw_tcp_server, sensitive_server, temp_db):
+    """
+    Verify simultaneous scan containing open non-HTTP TCP, open HTTP, and closed ports.
+    """
+    tcp_host, tcp_port = raw_tcp_server
+    http_host, http_port = sensitive_server
+    closed_port = 49993
+
+    discovery = AssetDiscovery(db_path=temp_db)
+    test_ports = [tcp_port, http_port, closed_port]
+
+    obs, duration = discovery.scan("127.0.0.1", ports=test_ports)
+
+    # Exactly 2 open ports discovered, 1 closed
+    assert len(obs) == 2
+    obs_by_port = {o["port"]: o for o in obs}
+
+    assert tcp_port in obs_by_port
+    assert obs_by_port[tcp_port]["service"] == "tcp-open"
+    assert obs_by_port[tcp_port]["protocol"] == "tcp"
+    assert obs_by_port[tcp_port]["status_code"] is None
+
+    assert http_port in obs_by_port
+    assert obs_by_port[http_port]["service"] == "http-web"
+    assert obs_by_port[http_port]["protocol"] == "http"
+    assert obs_by_port[http_port]["status_code"] == 200
+
+    assert closed_port not in obs_by_port
+    assert discovery.last_port_outcomes.get(closed_port) in ("closed", "unreachable")
+
+    snap_id = database.save_snapshot("127.0.0.1", obs, tested_ports=test_ports, db_path=temp_db)
+    snap = database.get_snapshot_by_id(snap_id, temp_db)
+    assert snap["tested_ports"] == sorted(test_ports)
+
+
+def test_snapshot_comparisons_with_non_http_tcp(temp_db):
+    """
+    Verify change detection across snapshots involving non-HTTP TCP ports,
+    HTTP services, port state conversions, and closures.
+    """
+    host = "127.0.0.1"
+
+    # Baseline observations:
+    # Port 80: HTTP 200
+    # Port 22: non-HTTP TCP
+    # Port 3306: non-HTTP TCP
+    baseline_obs = [
+        {"host": host, "port": 80, "protocol": "http", "service": "http-web", "status_code": 200, "headers": {}},
+        {"host": host, "port": 22, "protocol": "tcp", "service": "tcp-open", "status_code": None, "headers": {}},
+        {"host": host, "port": 3306, "protocol": "tcp", "service": "tcp-open", "status_code": None, "headers": {}},
+    ]
+    snap_1_id = database.save_snapshot(host, baseline_obs, tested_ports=[80, 22, 3306, 5432], db_path=temp_db)
+
+    # Current observations:
+    # Port 80: HTTP 200 (unchanged)
+    # Port 22: converted from raw TCP to HTTP 200 (modified)
+    # Port 3306: closed (removed)
+    # Port 5432: newly opened non-HTTP TCP (added)
+    current_obs = [
+        {"host": host, "port": 80, "protocol": "http", "service": "http-web", "status_code": 200, "headers": {}},
+        {"host": host, "port": 22, "protocol": "http", "service": "http-web", "status_code": 200, "headers": {}},
+        {"host": host, "port": 5432, "protocol": "tcp", "service": "tcp-open", "status_code": None, "headers": {}},
+    ]
+    snap_2_id = database.save_snapshot(host, current_obs, tested_ports=[80, 22, 3306, 5432], db_path=temp_db)
+
+    diff = ChangeEngine.compare_snapshots(snap_1_id, snap_2_id, db_path=temp_db)
+    summary = diff["summary"]
+
+    assert summary["has_changes"] is True
+    assert summary["added_count"] == 1
+    assert diff["added"][0]["port"] == 5432
+    assert diff["added"][0]["service"] == "tcp-open"
+    assert diff["added"][0]["status_code"] is None
+
+    assert summary["removed_count"] == 1
+    assert diff["removed"][0]["port"] == 3306
+    assert diff["removed"][0]["service"] == "tcp-open"
+
+    assert summary["modified_count"] == 1
+    mod_22 = diff["modified"][0]
+    assert mod_22["port"] == 22
+    changed_map = {c["field"]: (c["old_value"], c["new_value"]) for c in mod_22["changes"]}
+    assert changed_map["service"] == ("tcp-open", "http-web")
+    assert changed_map["protocol"] == ("tcp", "http")
+    assert changed_map["status_code"] == (None, 200)
+
+    assert summary["unchanged_count"] == 1
+    assert diff["unchanged"][0]["port"] == 80
+
+    # Ensure change report renders cleanly
+    report = ChangeEngine.generate_change_report(diff)
+    assert "tcp-open" in report
+    assert "5432" in report

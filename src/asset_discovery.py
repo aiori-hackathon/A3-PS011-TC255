@@ -326,7 +326,7 @@ class AssetDiscovery:
                 "host": host,
                 "port": port,
                 "protocol": "tcp",
-                "service": "tcp-service",
+                "service": "tcp-open",
                 "status_code": None,
                 "server_header": "",
                 "content_type": "",

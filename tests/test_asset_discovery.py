@@ -108,3 +108,45 @@ def test_graceful_handling_of_closed_ports(temp_db):
     # Closed port should either be omitted or empty
     assert len(observations) == 0
     assert duration >= 0.0
+
+
+class RawEchoHandler(socketserver.BaseRequestHandler):
+    def handle(self):
+        try:
+            self.request.recv(512)
+        except Exception:
+            pass
+
+
+@pytest.fixture(scope="module")
+def mock_raw_tcp_server():
+    """Spin up a raw TCP server on 127.0.0.1 that does not speak HTTP."""
+    server = socketserver.TCPServer(("127.0.0.1", 0), RawEchoHandler)
+    host, port = server.server_address
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield host, port
+    server.shutdown()
+    server.server_close()
+
+
+def test_discovery_on_non_http_tcp_service(mock_raw_tcp_server, temp_db):
+    """
+    Verify that an open TCP port which does not speak HTTP is inventoried
+    as an active observation with service='tcp-open', protocol='tcp', and status_code=None.
+    """
+    host, port = mock_raw_tcp_server
+    discovery = AssetDiscovery(db_path=temp_db)
+
+    observations, duration = discovery.scan(host, ports=[port])
+    assert len(observations) == 1
+    obs = observations[0]
+
+    assert obs["host"] == host
+    assert obs["port"] == port
+    assert obs["protocol"] == "tcp"
+    assert obs["service"] == "tcp-open"
+    assert obs["status_code"] is None
+    assert obs["state"] == "open"
+    assert obs["headers"] == {}
+    assert duration >= 0.0

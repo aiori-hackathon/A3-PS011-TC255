@@ -344,6 +344,24 @@ class RiskEngine:
                     else:
                         reasons.append(f"Service profile drift on {endpoint}: {field} changed from '{old_val}' to '{new_val}'")
 
+                # 6. RFC 9116 security.txt Status Drift
+                elif field == "security_txt_status":
+                    old_s = str(old_val).lower()
+                    new_s = str(new_val).lower()
+                    if old_s == "valid" and new_s in ("missing", "expired", "malformed"):
+                        reasons.append(
+                            f"Vulnerability disclosure posture drift on {endpoint}: RFC 9116 security.txt changed from {old_val} to {new_val}"
+                        )
+                        max_score = max(max_score, 2)
+                    elif new_s == "valid":
+                        reasons.append(
+                            f"Vulnerability disclosure posture improved on {endpoint}: RFC 9116 security.txt now Valid (baseline: {old_val})"
+                        )
+                    else:
+                        reasons.append(
+                            f"RFC 9116 security.txt status updated on {endpoint}: {old_val} -> {new_val}"
+                        )
+
             if not reasons:
                 reasons.append(f"Attribute modifications observed on endpoint {endpoint}")
 

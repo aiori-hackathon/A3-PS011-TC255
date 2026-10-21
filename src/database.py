@@ -125,11 +125,18 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
                 title TEXT,
                 response_time_ms REAL,
                 headers_json TEXT,
+                security_txt_json TEXT DEFAULT NULL,
                 state TEXT NOT NULL DEFAULT 'open',
                 timestamp TEXT NOT NULL,
                 FOREIGN KEY (snapshot_id) REFERENCES snapshots(id) ON DELETE CASCADE
             );
         """)
+
+        # Migration check for existing observations table
+        cursor.execute("PRAGMA table_info(observations);")
+        obs_columns = [row["name"] for row in cursor.fetchall()]
+        if "security_txt_json" not in obs_columns:
+            cursor.execute("ALTER TABLE observations ADD COLUMN security_txt_json TEXT DEFAULT NULL;")
 
         # Audit log table
         cursor.execute("""
@@ -226,14 +233,17 @@ def save_snapshot(
             sanitized = sanitize_headers_dict(raw_headers)
             headers_json = json.dumps(sanitized)
 
+            sec_txt = obs.get("security_txt")
+            sec_txt_json = json.dumps(sec_txt) if sec_txt is not None else None
+
             cursor.execute(
                 """
                 INSERT INTO observations (
                     snapshot_id, host, port, protocol, service, status_code,
                     server_header, content_type, title, response_time_ms,
-                    headers_json, state, timestamp
+                    headers_json, security_txt_json, state, timestamp
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     snapshot_id,
@@ -247,6 +257,7 @@ def save_snapshot(
                     obs.get("title", ""),
                     obs.get("response_time_ms"),
                     headers_json,
+                    sec_txt_json,
                     obs.get("state", "open"),
                     obs.get("timestamp", now_iso),
                 ),
@@ -336,7 +347,7 @@ def get_observations_for_snapshot(snapshot_id: int, db_path: str = DEFAULT_DB_PA
             """
             SELECT id, snapshot_id, host, port, protocol, service, status_code,
                    server_header, content_type, title, response_time_ms,
-                   headers_json, state, timestamp
+                   headers_json, security_txt_json, state, timestamp
             FROM observations
             WHERE snapshot_id = ?
             ORDER BY port ASC
@@ -352,6 +363,13 @@ def get_observations_for_snapshot(snapshot_id: int, db_path: str = DEFAULT_DB_PA
                 d["headers"] = sanitize_headers_dict(raw_headers)
             except Exception:
                 d["headers"] = {}
+            if d.get("security_txt_json"):
+                try:
+                    d["security_txt"] = json.loads(d["security_txt_json"])
+                except Exception:
+                    d["security_txt"] = None
+            else:
+                d["security_txt"] = None
             results.append(d)
         return results
 

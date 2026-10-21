@@ -180,6 +180,18 @@ class ChangeEngine:
                         "category": "security_posture",
                     })
 
+            # Check RFC 9116 security.txt posture drift
+            b_sec = (b_item.get("security_txt") or {}).get("status")
+            c_sec = (c_item.get("security_txt") or {}).get("status")
+            if b_sec and c_sec and b_sec != c_sec:
+                field_changes.append({
+                    "field": "security_txt_status",
+                    "label": "RFC 9116 security.txt",
+                    "old_value": b_sec.title(),
+                    "new_value": c_sec.title(),
+                    "category": "vulnerability_disclosure",
+                })
+
             if field_changes:
                 mod_entry = {
                     "endpoint": k,
@@ -332,6 +344,10 @@ class ChangeEngine:
                 )
                 if reasons_str:
                     lines.append(f"  * Evidence: {reasons_str}")
+                sec = item.get("security_txt")
+                if sec and sec.get("status") in ("valid", "expired", "malformed"):
+                    contacts = ", ".join(sec.get("contact", [])) or "None specified"
+                    lines.append(f"  * RFC 9116 security.txt: {sec['status'].upper()} (Contact: {contacts})")
             lines.append("")
 
         if diff.get("removed"):
@@ -353,6 +369,10 @@ class ChangeEngine:
                 lines.append(f"### Endpoint `{mod['endpoint']}` | Risk: **{r_label}**")
                 if reasons_str:
                     lines.append(f"  * Evidence: {reasons_str}")
+                sec = mod.get("after", {}).get("security_txt")
+                if sec and sec.get("status") in ("valid", "expired", "malformed"):
+                    contacts = ", ".join(sec.get("contact", [])) or "None specified"
+                    lines.append(f"  * RFC 9116 security.txt: {sec['status'].upper()} (Contact: {contacts})")
                 for ch in mod["changes"]:
                     lines.append(
                         f"  - **{ch['label']}**: `{ch['old_value']}` -> `{ch['new_value']}` ({ch['category']})"

@@ -17,6 +17,7 @@ from .database import (
 from .asset_discovery import AssetDiscovery, DEFAULT_LOCAL_PORTS
 from .change_engine import ChangeEngine
 from .risk_engine import RiskEngine
+from .security_txt import SecurityTxtParser, probe_security_txt
 
 __all__ = [
     "ScopeManager",
@@ -34,4 +35,6 @@ __all__ = [
     "DEFAULT_LOCAL_PORTS",
     "ChangeEngine",
     "RiskEngine",
+    "SecurityTxtParser",
+    "probe_security_txt",
 ]

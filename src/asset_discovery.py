@@ -17,6 +17,7 @@ from typing import Any, Optional
 import requests
 
 from scope_manager import ScopeManager, ScopeViolationError, InvalidTargetError
+from security_txt import probe_security_txt, SecurityTxtParser
 import database
 
 
@@ -129,6 +130,7 @@ def probe_http_service(
     allow_redirects: bool = False,
     max_redirects: int = 0,
     verify_tls: bool = True,
+    check_security_txt: bool = True,
 ) -> Optional[dict[str, Any]]:
     """
     Probe a local endpoint over HTTP(S) to gather status and response headers safely.
@@ -180,6 +182,7 @@ def probe_http_service(
                         allow_redirects=True,
                         max_redirects=max_redirects - 1,
                         verify_tls=verify_tls,
+                        check_security_txt=check_security_txt,
                     )
             except ScopeViolationError as exc:
                 redirect_info = {
@@ -213,6 +216,22 @@ def probe_http_service(
         }
         if redirect_info:
             obs["redirect_info"] = redirect_info
+
+        # Probe RFC 9116 security.txt on active web service
+        if check_security_txt:
+            try:
+                obs["security_txt"] = probe_security_txt(
+                    host=host,
+                    port=port,
+                    protocol=scheme,
+                    timeout=timeout,
+                    verify_tls=verify_tls,
+                )
+            except Exception:
+                obs["security_txt"] = None
+        else:
+            obs["security_txt"] = None
+
         return obs
 
     except requests.exceptions.SSLError:
@@ -225,6 +244,7 @@ def probe_http_service(
                 allow_redirects=allow_redirects,
                 max_redirects=max_redirects,
                 verify_tls=verify_tls,
+                check_security_txt=check_security_txt,
             )
         return None
 
@@ -333,6 +353,7 @@ class AssetDiscovery:
                 "title": "",
                 "response_time_ms": 0.0,
                 "headers": {},
+                "security_txt": None,
                 "state": "open",
                 "timestamp": now_iso,
             }

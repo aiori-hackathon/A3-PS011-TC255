@@ -321,11 +321,13 @@ with tab_scanner:
                 df_data = []
                 for obs in observations:
                     risk_info = RiskEngine.evaluate_asset_risk(obs)
+                    sec_status = (obs.get("security_txt") or {}).get("status", "N/A").upper() if obs.get("service") == "http-web" else "N/A"
                     df_data.append({
                         "Endpoint": f"{obs['host']}:{obs['port']}",
                         "Port": obs["port"],
                         "Risk Rating": risk_info["level"],
                         "Risk Evidence": "; ".join(risk_info["reasons"]),
+                        "security.txt": sec_status,
                         "Protocol": obs.get("protocol", "http").upper(),
                         "Service": obs.get("service", "http"),
                         "Status Code": obs.get("status_code"),
@@ -354,6 +356,38 @@ with tab_scanner:
                             st.write(f"**Latency:** `{obs.get('response_time_ms')} ms`")
                             st.write("**Collected Headers:**")
                             st.json(obs.get("headers", {}))
+
+                        sec_txt = obs.get("security_txt")
+                        if sec_txt:
+                            st.markdown("##### 📜 RFC 9116 Vulnerability Disclosure (`security.txt`)")
+                            status = sec_txt.get("status", "missing").upper()
+                            if status == "VALID":
+                                st.success(f"✅ **Status:** `VALID` (Found at `{sec_txt.get('path', 'N/A')}`)")
+                            elif status == "EXPIRED":
+                                st.warning(f"⚠️ **Status:** `EXPIRED` on `{sec_txt.get('expires_at')}` (Found at `{sec_txt.get('path', 'N/A')}`)")
+                            elif status == "MALFORMED":
+                                st.warning(f"⚠️ **Status:** `MALFORMED` (Found at `{sec_txt.get('path', 'N/A')}`)")
+                            elif status == "REDIRECT_BLOCKED":
+                                st.error("⛔ **Status:** `REDIRECT BLOCKED` (Attempted redirect outside authorized scope)")
+                            else:
+                                st.info("ℹ️ **Status:** `MISSING` (Neither `/.well-known/security.txt` nor `/security.txt` present)")
+
+                            if sec_txt.get("found"):
+                                s_col1, s_col2 = st.columns(2)
+                                with s_col1:
+                                    st.write(f"**Contact(s):** {', '.join(sec_txt.get('contact', [])) or 'None'}")
+                                    st.write(f"**Expires:** `{sec_txt.get('expires_at') or sec_txt.get('expires_raw') or 'N/A'}`")
+                                    if sec_txt.get("preferred_languages"):
+                                        st.write(f"**Languages:** `{', '.join(sec_txt['preferred_languages'])}`")
+                                with s_col2:
+                                    if sec_txt.get("policy"):
+                                        st.write(f"**Policy:** `{', '.join(sec_txt['policy'])}`")
+                                    if sec_txt.get("encryption"):
+                                        st.write(f"**Encryption/PGP:** `{', '.join(sec_txt['encryption'])}`")
+                                    if sec_txt.get("acknowledgments"):
+                                        st.write(f"**Acknowledgments:** `{', '.join(sec_txt['acknowledgments'])}`")
+                                if sec_txt.get("notes"):
+                                    st.caption(f"**Audit Notes:** {'; '.join(sec_txt['notes'])}")
                         st.markdown("---")
             else:
                 st.info(f"No active HTTP services responded on the {len(selected_ports)} scanned ports.")
@@ -378,11 +412,13 @@ with tab_scanner:
                 df_data = []
                 for obs in latest_obs:
                     risk_info = RiskEngine.evaluate_asset_risk(obs)
+                    sec_status = (obs.get("security_txt") or {}).get("status", "N/A").upper() if obs.get("service") == "http-web" else "N/A"
                     df_data.append({
                         "Endpoint": f"{obs['host']}:{obs['port']}",
                         "Port": obs["port"],
                         "Risk Rating": risk_info["level"],
                         "Risk Evidence": "; ".join(risk_info["reasons"]),
+                        "security.txt": sec_status,
                         "Protocol": obs.get("protocol", "http").upper(),
                         "Service": obs.get("service", "http"),
                         "Status Code": obs.get("status_code"),
@@ -630,6 +666,7 @@ with tab_history:
                     "Port": o["port"],
                     "Risk Rating": RiskEngine.evaluate_asset_risk(o)["level"],
                     "Risk Evidence": "; ".join(RiskEngine.evaluate_asset_risk(o)["reasons"]),
+                    "security.txt": (o.get("security_txt") or {}).get("status", "N/A").upper() if o.get("service") == "http-web" else "N/A",
                     "Protocol": o["protocol"],
                     "Service": o["service"],
                     "Status": o["status_code"],

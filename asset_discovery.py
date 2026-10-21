@@ -373,3 +373,40 @@ class AssetDiscovery:
                 db_path=self.db_path,
             )
             raise
+
+    def scan_and_save(
+        self,
+        target: str,
+        ports: Optional[list[int]] = None,
+        notes: str = "",
+        timeout: float = 1.0,
+        max_workers: int = 8,
+        verify_tls: bool = True,
+        **kwargs: Any,
+    ) -> tuple[int, list[dict[str, Any]], float]:
+        """
+        Execute scan and automatically persist snapshot with tested_ports metadata.
+        Returns: (snapshot_id, observations, duration)
+        """
+        observations, duration = self.scan(
+            target=target,
+            ports=ports,
+            timeout=timeout,
+            max_workers=max_workers,
+            verify_tls=verify_tls,
+        )
+        snapshot_id = database.save_snapshot(
+            target_host=target,
+            observations=observations,
+            scan_duration_sec=duration,
+            notes=notes,
+            tested_ports=self.last_tested_ports,
+            db_path=self.db_path,
+            **kwargs,
+        )
+        return snapshot_id, observations, duration
+
+
+def save_snapshot(*args: Any, **kwargs: Any) -> int:
+    """Convenience alias delegating directly to database.save_snapshot."""
+    return database.save_snapshot(*args, **kwargs)

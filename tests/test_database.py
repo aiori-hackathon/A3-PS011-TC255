@@ -151,3 +151,90 @@ def test_cascade_delete_snapshot(temp_db):
 
     obs_after = database.get_observations_for_snapshot(snap_id, temp_db)
     assert len(obs_after) == 0
+
+
+def test_save_snapshot_with_tested_ports(temp_db):
+    """
+    Verify snapshot persistence with tested_ports metadata,
+    supporting keyword arguments, positional arguments, and kwargs.
+    """
+    obs = [{"host": "127.0.0.1", "port": 8080, "protocol": "http"}]
+
+    # 1. Keyword argument call
+    snap_id = database.save_snapshot(
+        target_host="127.0.0.1",
+        observations=obs,
+        scan_duration_sec=0.12,
+        notes="Coverage test",
+        tested_ports=[80, 443, 8080, 3000],
+        db_path=temp_db,
+    )
+    snap = database.get_snapshot_by_id(snap_id, temp_db)
+    assert snap is not None
+    assert snap["tested_ports"] == [80, 443, 3000, 8080]
+
+    # 2. Backward-compatible positional call (5th argument is db_path string)
+    snap_id_pos = database.save_snapshot(
+        "127.0.0.1",
+        obs,
+        0.05,
+        "Positional test",
+        temp_db,
+    )
+    snap_pos = database.get_snapshot_by_id(snap_id_pos, temp_db)
+    assert snap_pos is not None
+    assert snap_pos["tested_ports"] == [8080]
+
+    # 3. Call using supported alias 'ports'
+    snap_id_alias_ports = database.save_snapshot(
+        target_host="127.0.0.1",
+        observations=obs,
+        ports=[80, 8080],
+        db_path=temp_db,
+    )
+    snap_ports = database.get_snapshot_by_id(snap_id_alias_ports, temp_db)
+    assert snap_ports is not None
+    assert snap_ports["tested_ports"] == [80, 8080]
+
+    # 4. Call via asset_discovery.save_snapshot alias
+    import asset_discovery
+    snap_id_alias = asset_discovery.save_snapshot(
+        target_host="127.0.0.1",
+        observations=obs,
+        tested_ports=[8080, 5000],
+        db_path=temp_db,
+    )
+    snap_alias = database.get_snapshot_by_id(snap_id_alias, temp_db)
+    assert snap_alias is not None
+    assert snap_alias["tested_ports"] == [5000, 8080]
+
+
+def test_save_snapshot_rejects_unsupported_kwargs(temp_db):
+    """
+    Verify save_snapshot raises a clear TypeError when unknown or misspelled
+    keyword arguments are passed instead of silently ignoring them.
+    """
+    obs = [{"host": "127.0.0.1", "port": 8080, "protocol": "http"}]
+
+    # 1. Misspelled singular 'tested_port'
+    with pytest.raises(TypeError) as exc_info:
+        database.save_snapshot(
+            target_host="127.0.0.1",
+            observations=obs,
+            tested_port=[8080],
+            db_path=temp_db,
+        )
+    assert "unexpected keyword argument" in str(exc_info.value)
+    assert "tested_port" in str(exc_info.value)
+    assert "Supported arguments" in str(exc_info.value)
+
+    # 2. Arbitrary unsupported argument
+    with pytest.raises(TypeError) as exc_info2:
+        database.save_snapshot(
+            target_host="127.0.0.1",
+            observations=obs,
+            invalid_arg="unsupported",
+            db_path=temp_db,
+        )
+    assert "unexpected keyword argument" in str(exc_info2.value)
+    assert "invalid_arg" in str(exc_info2.value)

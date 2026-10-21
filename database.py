@@ -146,6 +146,9 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         conn.commit()
 
 
+SUPPORTED_SNAPSHOT_KWARGS = frozenset({"tested_ports", "ports", "db_path"})
+
+
 def save_snapshot(
     target_host: str,
     observations: list[dict[str, Any]],
@@ -153,19 +156,53 @@ def save_snapshot(
     notes: str = "",
     tested_ports: Optional[list[int]] = None,
     db_path: str = DEFAULT_DB_PATH,
+    **kwargs: Any,
 ) -> int:
     """
     Persist a new timestamped snapshot and its sanitized asset observations.
 
+    Parameters:
+      target_host: Authorized target IP or hostname.
+      observations: Discovered asset/endpoint dictionaries.
+      scan_duration_sec: Scan runtime in seconds.
+      notes: Optional human-readable note/tag for the snapshot.
+      tested_ports: List of ports tested during discovery.
+      db_path: SQLite database file path.
+      **kwargs: Supported keyword aliases ('ports' for tested_ports, 'db_path').
+                Any unsupported keyword argument raises TypeError.
+
     Returns:
       int: The newly created snapshot ID.
     """
+    # Validate against unsupported keyword arguments to catch typos early
+    unsupported_kwargs = set(kwargs.keys()) - SUPPORTED_SNAPSHOT_KWARGS
+    if unsupported_kwargs:
+        raise TypeError(
+            f"save_snapshot() got unexpected keyword argument(s): {', '.join(sorted(unsupported_kwargs))}. "
+            f"Supported arguments are 'target_host', 'observations', 'scan_duration_sec', 'notes', "
+            f"'tested_ports' (alias: 'ports'), and 'db_path'."
+        )
+
+    # Backward compatibility: if 5th argument was a string, caller passed db_path positionally
+    if isinstance(tested_ports, str):
+        db_path = tested_ports
+        tested_ports = kwargs.get("tested_ports", kwargs.get("ports", None))
+    elif "db_path" in kwargs:
+        db_path = kwargs["db_path"]
+
+    # Support alternative kwarg names like 'ports'
+    if tested_ports is None:
+        if "tested_ports" in kwargs:
+            tested_ports = kwargs["tested_ports"]
+        elif "ports" in kwargs:
+            tested_ports = kwargs["ports"]
+
     init_db(db_path)
     now_iso = datetime.now(timezone.utc).isoformat()
 
     # Determine tested ports
-    if tested_ports is not None:
-        ports_to_record = sorted(list(set(tested_ports)))
+    if tested_ports is not None and isinstance(tested_ports, (list, set, tuple)):
+        ports_to_record = sorted(list({int(p) for p in tested_ports if str(p).isdigit() or isinstance(p, int)}))
     else:
         ports_to_record = sorted(list({int(obs.get("port", 80)) for obs in observations if "port" in obs}))
 

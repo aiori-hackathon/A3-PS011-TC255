@@ -19,6 +19,7 @@ import streamlit as st
 from scope_manager import ScopeManager, ScopeViolationError, InvalidTargetError
 from asset_discovery import AssetDiscovery, DEFAULT_LOCAL_PORTS
 from change_engine import ChangeEngine
+from risk_engine import RiskEngine
 import database
 
 
@@ -110,6 +111,42 @@ st.markdown("""
     .diff-unchanged {
         color: var(--text-color, #6c757d);
         opacity: 0.75;
+    }
+    .risk-badge-critical {
+        display: inline-block;
+        background-color: #dc3545;
+        color: white;
+        padding: 2px 8px;
+        border-radius: 4px;
+        font-weight: 700;
+        font-size: 0.8rem;
+    }
+    .risk-badge-high {
+        display: inline-block;
+        background-color: #fd7e14;
+        color: white;
+        padding: 2px 8px;
+        border-radius: 4px;
+        font-weight: 700;
+        font-size: 0.8rem;
+    }
+    .risk-badge-medium {
+        display: inline-block;
+        background-color: #ffc107;
+        color: #212529;
+        padding: 2px 8px;
+        border-radius: 4px;
+        font-weight: 700;
+        font-size: 0.8rem;
+    }
+    .risk-badge-low {
+        display: inline-block;
+        background-color: #0dcaf0;
+        color: #212529;
+        padding: 2px 8px;
+        border-radius: 4px;
+        font-weight: 700;
+        font-size: 0.8rem;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -283,9 +320,12 @@ with tab_scanner:
                 st.markdown("### Discovered Endpoints")
                 df_data = []
                 for obs in observations:
+                    risk_info = RiskEngine.evaluate_asset_risk(obs)
                     df_data.append({
                         "Endpoint": f"{obs['host']}:{obs['port']}",
                         "Port": obs["port"],
+                        "Risk Rating": risk_info["level"],
+                        "Risk Evidence": "; ".join(risk_info["reasons"]),
                         "Protocol": obs.get("protocol", "http").upper(),
                         "Service": obs.get("service", "http"),
                         "Status Code": obs.get("status_code"),
@@ -300,8 +340,11 @@ with tab_scanner:
                 with st.expander("🔍 Deep Endpoint Observation & Response Headers"):
                     for obs in observations:
                         st.markdown(f"#### Endpoint: `{obs['host']}:{obs['port']}`")
+                        risk_info = RiskEngine.evaluate_asset_risk(obs)
                         col_a, col_b = st.columns(2)
                         with col_a:
+                            st.write(f"**Risk Rating:** `{risk_info['level']}`")
+                            st.write(f"**Risk Evidence:** {'; '.join(risk_info['reasons'])}")
                             st.write(f"**Status Code:** `{obs.get('status_code')}`")
                             st.write(f"**Server Banner:** `{obs.get('server_header') or 'N/A'}`")
                             st.write(f"**Content-Type:** `{obs.get('content_type') or 'N/A'}`")
@@ -334,9 +377,12 @@ with tab_scanner:
             if latest_obs:
                 df_data = []
                 for obs in latest_obs:
+                    risk_info = RiskEngine.evaluate_asset_risk(obs)
                     df_data.append({
                         "Endpoint": f"{obs['host']}:{obs['port']}",
                         "Port": obs["port"],
+                        "Risk Rating": risk_info["level"],
+                        "Risk Evidence": "; ".join(risk_info["reasons"]),
                         "Protocol": obs.get("protocol", "http").upper(),
                         "Service": obs.get("service", "http"),
                         "Status Code": obs.get("status_code"),
@@ -441,17 +487,58 @@ with tab_diff:
                 </div>
                 """, unsafe_allow_html=True)
 
+            # Risk Drift Metrics
+            st.markdown("<br>", unsafe_allow_html=True)
+            rc1, rc2, rc3, rc4 = st.columns(4)
+            with rc1:
+                st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-label">Critical Risk Drift</div>
+                    <div class="metric-value" style="color: #dc3545;">{summary.get('critical_count', 0)}</div>
+                </div>
+                """, unsafe_allow_html=True)
+            with rc2:
+                st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-label">High Risk Drift</div>
+                    <div class="metric-value" style="color: #fd7e14;">{summary.get('high_count', 0)}</div>
+                </div>
+                """, unsafe_allow_html=True)
+            with rc3:
+                st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-label">Medium Risk Drift</div>
+                    <div class="metric-value" style="color: #ffc107;">{summary.get('medium_count', 0)}</div>
+                </div>
+                """, unsafe_allow_html=True)
+            with rc4:
+                st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-label">Low Risk Drift</div>
+                    <div class="metric-value" style="color: #0dcaf0;">{summary.get('low_count', 0)}</div>
+                </div>
+                """, unsafe_allow_html=True)
+
             st.markdown("<br>", unsafe_allow_html=True)
 
             if not summary["has_changes"]:
                 st.success("✅ **Attack Surface is Stable**: No additions, removals, or attribute changes were detected between these snapshots.")
             else:
+                if summary.get("critical_count", 0) > 0:
+                    st.error(f"🚨 **CRITICAL RISK DRIFT**: {summary['critical_count']} critical drift event(s) identified. Immediate inspection required.")
+                elif summary.get("high_count", 0) > 0:
+                    st.warning(f"⚠️ **HIGH RISK DRIFT**: {summary['high_count']} high-risk drift event(s) identified.")
+                elif summary.get("medium_count", 0) > 0:
+                    st.info(f"ℹ️ **MEDIUM RISK DRIFT**: {summary['medium_count']} medium-risk drift event(s) identified.")
+
                 # 1. Added
                 if diff_result["added"]:
                     st.markdown("#### 🟢 [+] Newly Added Endpoints (Attack Surface Expansion)")
                     added_df = pd.DataFrame([{
                         "Endpoint": f"{a['host']}:{a['port']}",
                         "Port": a["port"],
+                        "Risk Rating": a.get("risk", {}).get("level", "LOW"),
+                        "Risk Evidence": "; ".join(a.get("risk", {}).get("reasons", [])),
                         "Service": a.get("service"),
                         "Status Code": a.get("status_code"),
                         "Server": a.get("server_header") or "N/A",
@@ -465,6 +552,8 @@ with tab_diff:
                     removed_df = pd.DataFrame([{
                         "Endpoint": f"{r['host']}:{r['port']}",
                         "Port": r["port"],
+                        "Risk Rating": r.get("risk", {}).get("level", "LOW"),
+                        "Risk Evidence": "; ".join(r.get("risk", {}).get("reasons", [])),
                         "Previous Service": r.get("service"),
                         "Previous Status": r.get("status_code"),
                         "Previous Server": r.get("server_header") or "N/A",
@@ -475,7 +564,11 @@ with tab_diff:
                 if diff_result["modified"]:
                     st.markdown("#### 🟡 [~] Modified Endpoints (Configuration & Attribute Drift)")
                     for mod in diff_result["modified"]:
-                        st.markdown(f"**Endpoint:** `{mod['endpoint']}`")
+                        r_level = mod.get("risk", {}).get("level", "LOW")
+                        r_reasons = mod.get("risk", {}).get("reasons", [])
+                        st.markdown(f"**Endpoint:** `{mod['endpoint']}` — **Risk:** `{r_level}`")
+                        if r_reasons:
+                            st.caption(f"**Evidence:** {'; '.join(r_reasons)}")
                         changes_rows = []
                         for ch in mod["changes"]:
                             changes_rows.append({
@@ -535,6 +628,8 @@ with tab_history:
                 obs_df = pd.DataFrame([{
                     "Host": o["host"],
                     "Port": o["port"],
+                    "Risk Rating": RiskEngine.evaluate_asset_risk(o)["level"],
+                    "Risk Evidence": "; ".join(RiskEngine.evaluate_asset_risk(o)["reasons"]),
                     "Protocol": o["protocol"],
                     "Service": o["service"],
                     "Status": o["status_code"],

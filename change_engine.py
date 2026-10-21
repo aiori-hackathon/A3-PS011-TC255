@@ -13,6 +13,7 @@ Compares successive asset snapshots to identify:
 
 from typing import Any, Optional
 import database
+from risk_engine import RiskEngine
 
 
 MONITORED_FIELDS = [
@@ -83,12 +84,22 @@ class ChangeEngine:
         missing_keys = baseline_keys - current_keys
         common_keys = baseline_keys & current_keys
 
-        added = [current_map[k] for k in sorted(added_keys)]
+        added = []
+        for k in sorted(added_keys):
+            item = dict(current_map[k])
+            item["risk"] = RiskEngine.evaluate_change_risk("added", item)
+            added.append(item)
+
         removed = []
         untested = []
         inconclusive = []
         modified = []
         unchanged = []
+
+        def _with_removed_risk(raw_obs: dict[str, Any]) -> dict[str, Any]:
+            item = dict(raw_obs)
+            item["risk"] = RiskEngine.evaluate_change_risk("removed", item)
+            return item
 
         # Process baseline endpoints absent from current active observations
         for k in sorted(missing_keys):
@@ -108,7 +119,7 @@ class ChangeEngine:
                     if current_port_outcomes:
                         outcome = current_port_outcomes.get(port, "closed")
                         if outcome == "closed":
-                            removed.append(b_item)
+                            removed.append(_with_removed_risk(b_item))
                         elif outcome in ("timeout", "unreachable"):
                             inconclusive.append({
                                 "endpoint": k,
@@ -116,10 +127,10 @@ class ChangeEngine:
                                 "reason": f"Port {port} probe timed out or was unreachable; status inconclusive.",
                             })
                         else:
-                            removed.append(b_item)
+                            removed.append(_with_removed_risk(b_item))
                     else:
                         # Port was in tested ports list and did not respond (connection closed)
-                        removed.append(b_item)
+                        removed.append(_with_removed_risk(b_item))
             else:
                 # Priority 3: Never infer removal solely because an endpoint is absent;
                 # mark unknown historical coverage as inconclusive.
@@ -170,18 +181,27 @@ class ChangeEngine:
                     })
 
             if field_changes:
-                modified.append({
+                mod_entry = {
                     "endpoint": k,
                     "host": c_item.get("host"),
                     "port": c_item.get("port"),
                     "changes": field_changes,
                     "before": b_item,
                     "after": c_item,
-                })
+                }
+                mod_entry["risk"] = RiskEngine.evaluate_change_risk("modified", mod_entry)
+                modified.append(mod_entry)
             else:
-                unchanged.append(c_item)
+                unchanged_entry = dict(c_item)
+                unchanged_entry["risk"] = RiskEngine.evaluate_change_risk("unchanged", unchanged_entry)
+                unchanged.append(unchanged_entry)
 
         has_changes = bool(added or removed or modified)
+        all_changes = added + modified + removed
+        critical_count = sum(1 for item in all_changes if item.get("risk", {}).get("level") == "CRITICAL")
+        high_count = sum(1 for item in all_changes if item.get("risk", {}).get("level") == "HIGH")
+        medium_count = sum(1 for item in all_changes if item.get("risk", {}).get("level") == "MEDIUM")
+        low_count = sum(1 for item in all_changes if item.get("risk", {}).get("level") == "LOW")
 
         return {
             "summary": {
@@ -194,6 +214,10 @@ class ChangeEngine:
                 "untested_count": len(untested),
                 "inconclusive_count": len(inconclusive),
                 "has_changes": has_changes,
+                "critical_count": critical_count,
+                "high_count": high_count,
+                "medium_count": medium_count,
+                "low_count": low_count,
             },
             "added": added,
             "removed": removed,
@@ -285,6 +309,7 @@ class ChangeEngine:
         lines = [
             "# Threat Lens Differential Change Report",
             f"- **Status**: {'Changes Detected' if summary.get('has_changes') else 'Stable / No Changes'}",
+            f"- **Risk Posture**: Critical: {summary.get('critical_count', 0)} | High: {summary.get('high_count', 0)} | Medium: {summary.get('medium_count', 0)} | Low: {summary.get('low_count', 0)}",
             f"- **Baseline Assets**: {summary.get('total_baseline', 0)}",
             f"- **Current Assets**: {summary.get('total_current', 0)}",
             f"- **Added Assets**: {summary.get('added_count', 0)}",
@@ -299,23 +324,35 @@ class ChangeEngine:
         if diff.get("added"):
             lines.append("## [+] Added Endpoints (Attack Surface Expansion)")
             for item in diff["added"]:
+                r = item.get("risk", {})
+                r_label = f"[{r.get('level', 'INFO')}]"
+                reasons_str = "; ".join(r.get("reasons", []))
                 lines.append(
-                    f"- `{item['host']}:{item['port']}` | Service: {item.get('service')} | Status: {item.get('status_code')} | Banner: {item.get('server_header') or 'N/A'}"
+                    f"- `{item['host']}:{item['port']}` | Risk: **{r_label}** | Service: {item.get('service')} | Status: {item.get('status_code')} | Banner: {item.get('server_header') or 'N/A'}"
                 )
+                if reasons_str:
+                    lines.append(f"  * Evidence: {reasons_str}")
             lines.append("")
 
         if diff.get("removed"):
             lines.append("## [-] Confirmed Removed Endpoints (Decommissioned)")
             for item in diff["removed"]:
+                r = item.get("risk", {})
+                r_label = f"[{r.get('level', 'INFO')}]"
                 lines.append(
-                    f"- `{item['host']}:{item['port']}` | Previous Service: {item.get('service')} | Previous Status: {item.get('status_code')}"
+                    f"- `{item['host']}:{item['port']}` | Risk: **{r_label}** | Previous Service: {item.get('service')} | Previous Status: {item.get('status_code')}"
                 )
             lines.append("")
 
         if diff.get("modified"):
             lines.append("## [~] Modified Endpoints (Attribute Drift)")
             for mod in diff["modified"]:
-                lines.append(f"### Endpoint `{mod['endpoint']}`")
+                r = mod.get("risk", {})
+                r_label = f"[{r.get('level', 'INFO')}]"
+                reasons_str = "; ".join(r.get("reasons", []))
+                lines.append(f"### Endpoint `{mod['endpoint']}` | Risk: **{r_label}**")
+                if reasons_str:
+                    lines.append(f"  * Evidence: {reasons_str}")
                 for ch in mod["changes"]:
                     lines.append(
                         f"  - **{ch['label']}**: `{ch['old_value']}` -> `{ch['new_value']}` ({ch['category']})"
